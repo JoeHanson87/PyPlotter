@@ -85,6 +85,36 @@ def _configure_ttk_style():
     style.configure("TSeparator", background=BORDER)
 
 
+# ── Tooltip helper ─────────────────────────────────────────────────────────
+
+class _ToolTip:
+    """Simple hover tooltip for tkinter widgets."""
+
+    def __init__(self, widget: tk.Widget, text: str):
+        self._widget = widget
+        self._text   = text
+        self._tw: tk.Toplevel | None = None
+        widget.bind("<Enter>", self._show)
+        widget.bind("<Leave>", self._hide)
+
+    def _show(self, _event=None):
+        x = self._widget.winfo_rootx() + self._widget.winfo_width() + 4
+        y = self._widget.winfo_rooty()
+        self._tw = tk.Toplevel(self._widget)
+        self._tw.wm_overrideredirect(True)
+        self._tw.wm_geometry(f"+{x}+{y}")
+        tk.Label(self._tw, text=self._text,
+                 bg=PANEL_BG, fg=TEXT_FG,
+                 relief="flat", borderwidth=1,
+                 font=("Segoe UI", 9),
+                 padx=6, pady=3).pack()
+
+    def _hide(self, _event=None):
+        if self._tw:
+            self._tw.destroy()
+            self._tw = None
+
+
 # ── Channel selection item ─────────────────────────────────────────────────
 
 class ChannelItem:
@@ -334,13 +364,15 @@ class TdmsViewer(tk.Tk):
         file_header.file_id = file_id  # tag for later removal
 
         ttk.Label(file_header,
-                  text=f"📄 {file_label}",
+                  text=f"[TDMS] {file_label}",
                   style="Header.TLabel",
                   wraplength=220).pack(side=tk.LEFT, fill=tk.X, expand=True)
 
-        close_btn = ttk.Button(file_header, text="✕", width=3,
+        close_btn = ttk.Button(file_header, text="X", width=3,
                                command=lambda fid=file_id: self._remove_file(fid))
         close_btn.pack(side=tk.RIGHT)
+        # Tooltip for accessibility
+        _ToolTip(close_btn, f"Close {file_label}")
 
         ttk.Separator(self._channel_frame, orient=tk.HORIZONTAL).pack(
             fill=tk.X, padx=8, pady=(0, 4))
@@ -410,12 +442,6 @@ class TdmsViewer(tk.Tk):
             ref = getattr(widget, "item_ref", None)
             if fid == file_id or (ref is not None and ref.file_id == file_id):
                 widget.destroy()
-            # Also destroy separator that follows header – handled by iterating separators
-        # Destroy any orphaned separators
-        for widget in self._channel_frame.winfo_children():
-            if isinstance(widget, ttk.Separator):
-                # If the preceding header is gone, remove the separator too
-                pass  # separators are tied to headers; cleaned above
 
         del self._files[file_id]
 
@@ -461,7 +487,7 @@ class TdmsViewer(tk.Tk):
                 except Exception:
                     t = np.arange(len(data))
 
-                label = f"{item.file_label}  {item.group}/{item.channel}"
+                label = f"{item.file_label} – {item.group}/{item.channel}"
                 self._ax.plot(t, data, color=item.color, linewidth=1.2,
                               label=label, alpha=0.9)
                 plotted += 1
