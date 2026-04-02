@@ -84,6 +84,15 @@ def _configure_ttk_style():
 
     style.configure("TSeparator", background=BORDER)
 
+    style.configure("TCombobox",
+                    fieldbackground=PANEL_BG, background=BUTTON_BG,
+                    foreground=TEXT_FG, arrowcolor=TEXT_FG,
+                    selectbackground=HIGHLIGHT_BG, selectforeground=ACCENT,
+                    bordercolor=BORDER, relief="flat")
+    style.map("TCombobox",
+              fieldbackground=[("readonly", PANEL_BG)],
+              foreground=[("readonly", TEXT_FG)])
+
 
 # ── Tooltip helper ─────────────────────────────────────────────────────────
 
@@ -148,6 +157,11 @@ class TdmsViewer(tk.Tk):
         self._channel_items: list[ChannelItem] = []
         self._color_index = 0
 
+        # X-axis mode state
+        self._x_mode_var    = tk.StringVar(value="time")   # "time" | "channel"
+        self._x_group_var   = tk.StringVar(value="")
+        self._x_channel_var = tk.StringVar(value="")
+
         self._build_menu()
         self._build_layout()
 
@@ -211,6 +225,55 @@ class TdmsViewer(tk.Tk):
                    style="Accent.TButton").pack(side=tk.LEFT, fill=tk.X, expand=True)
         ttk.Button(btn_frame, text="Clear All",
                    command=self._clear_all).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
+
+        # ── X-Axis mode controls ──────────────────────────────────────────
+        ttk.Separator(self._sidebar, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=8, pady=(4, 0))
+
+        self._xaxis_mode_frame = ttk.Frame(self._sidebar, style="Panel.TFrame")
+        self._xaxis_mode_frame.pack(fill=tk.X, padx=8, pady=(4, 0))
+
+        ttk.Label(self._xaxis_mode_frame, text="X-Axis Mode:",
+                  style="Sub.TLabel").pack(anchor="w")
+
+        mode_row = ttk.Frame(self._xaxis_mode_frame, style="Panel.TFrame")
+        mode_row.pack(fill=tk.X)
+        for text, val in [("Time / Index", "time"), ("Channel", "channel")]:
+            tk.Radiobutton(
+                mode_row, text=text,
+                variable=self._x_mode_var, value=val,
+                command=self._on_x_mode_changed,
+                bg=PANEL_BG, fg=TEXT_FG,
+                activebackground=PANEL_BG, activeforeground=ACCENT,
+                selectcolor=BORDER, relief="flat", bd=0,
+                cursor="hand2",
+            ).pack(side=tk.LEFT, padx=(0, 8))
+
+        # Group / Channel selector (shown only in "channel" mode)
+        self._xaxis_selector_frame = ttk.Frame(self._sidebar, style="Panel.TFrame")
+        # Not packed initially – shown by _on_x_mode_changed
+
+        ttk.Label(self._xaxis_selector_frame, text="X Group:",
+                  style="Sub.TLabel").pack(anchor="w", padx=8)
+        self._x_group_combo = ttk.Combobox(
+            self._xaxis_selector_frame,
+            textvariable=self._x_group_var,
+            state="readonly", width=24,
+        )
+        self._x_group_combo.pack(fill=tk.X, padx=8, pady=(0, 2))
+        self._x_group_combo.bind("<<ComboboxSelected>>", self._on_x_group_changed)
+
+        ttk.Label(self._xaxis_selector_frame, text="X Channel:",
+                  style="Sub.TLabel").pack(anchor="w", padx=8)
+        self._x_channel_combo = ttk.Combobox(
+            self._xaxis_selector_frame,
+            textvariable=self._x_channel_var,
+            state="readonly", width=24,
+        )
+        self._x_channel_combo.pack(fill=tk.X, padx=8, pady=(0, 4))
+        self._x_channel_combo.bind("<<ComboboxSelected>>",
+                                   lambda _e: self._refresh_plot())
+
+        ttk.Separator(self._sidebar, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=8, pady=(0, 4))
 
         # Channel list with scroll
         list_container = ttk.Frame(self._sidebar, style="Panel.TFrame")
@@ -351,6 +414,7 @@ class TdmsViewer(tk.Tk):
         }
 
         self._populate_channels(file_id, file_label, tdms_file)
+        self._update_x_axis_options()
         self._status_var.set(f"Loaded: {file_label}")
 
     def _populate_channels(self, file_id: int, file_label: str, tdms_file: TdmsFile):
@@ -455,10 +519,74 @@ class TdmsViewer(tk.Tk):
             )
             self._empty_label.pack(pady=20)
 
+        self._update_x_axis_options()
         self._refresh_plot()
         self._status_var.set(
             f"Removed file. {len(self._files)} file(s) loaded."
         )
+
+    # ── X-Axis mode helpers ───────────────────────────────────────────────
+
+    def _on_x_mode_changed(self):
+        if self._x_mode_var.get() == "channel":
+            self._xaxis_selector_frame.pack(
+                after=self._xaxis_mode_frame, fill=tk.X, padx=0, pady=(0, 4)
+            )
+        else:
+            self._xaxis_selector_frame.pack_forget()
+        self._refresh_plot()
+
+    def _on_x_group_changed(self, _event=None):
+        self._update_x_channel_options()
+        self._refresh_plot()
+
+    def _update_x_axis_options(self):
+        """Recompute common group names across all loaded files and refresh dropdowns."""
+        if not self._files:
+            self._x_group_combo["values"] = []
+            self._x_channel_combo["values"] = []
+            self._x_group_var.set("")
+            self._x_channel_var.set("")
+            return
+
+        file_group_sets = [
+            {g.name for g in fd["tdms"].groups()}
+            for fd in self._files.values()
+        ]
+        # Intersection keeps only groups present in every loaded file
+        non_empty_group_sets = [s for s in file_group_sets if s]
+        common_groups = sorted(set.intersection(*non_empty_group_sets)) if non_empty_group_sets else []
+
+        self._x_group_combo["values"] = common_groups
+
+        if self._x_group_var.get() not in common_groups:
+            self._x_group_var.set(common_groups[0] if common_groups else "")
+
+        self._update_x_channel_options()
+
+    def _update_x_channel_options(self):
+        """Recompute common channel names for the selected X group across all files."""
+        selected_group = self._x_group_var.get()
+        if not selected_group or not self._files:
+            self._x_channel_combo["values"] = []
+            self._x_channel_var.set("")
+            return
+
+        file_channel_sets = []
+        for fd in self._files.values():
+            try:
+                group = fd["tdms"][selected_group]
+                file_channel_sets.append({ch.name for ch in group.channels()})
+            except KeyError:
+                file_channel_sets.append(set())
+
+        non_empty_channel_sets = [s for s in file_channel_sets if s]
+        common_channels = sorted(set.intersection(*non_empty_channel_sets)) if non_empty_channel_sets else []
+
+        self._x_channel_combo["values"] = common_channels
+
+        if self._x_channel_var.get() not in common_channels:
+            self._x_channel_var.set(common_channels[0] if common_channels else "")
 
     # ── Plot refresh ──────────────────────────────────────────────────────
 
@@ -467,6 +595,11 @@ class TdmsViewer(tk.Tk):
         self._style_axes()
 
         plotted = 0
+        x_mode    = self._x_mode_var.get()
+        x_group   = self._x_group_var.get()
+        x_channel = self._x_channel_var.get()
+        use_xy    = x_mode == "channel" and bool(x_group) and bool(x_channel)
+
         for item in self._channel_items:
             if not item.var.get():
                 continue
@@ -481,11 +614,24 @@ class TdmsViewer(tk.Tk):
                 if data is None or len(data) == 0:
                     continue
 
-                # Use time track if available, otherwise use sample index
-                try:
-                    t = channel.time_track()
-                except Exception:
-                    t = np.arange(len(data))
+                if use_xy:
+                    try:
+                        x_data  = tdms_file[x_group][x_channel][:]
+                        min_len = min(len(x_data), len(data))
+                        t    = x_data[:min_len]
+                        data = data[:min_len]
+                    except Exception:
+                        # Fall back to time/index if X channel unavailable for this file
+                        try:
+                            t = channel.time_track()
+                        except Exception:
+                            t = np.arange(len(data))
+                else:
+                    # Use time track if available, otherwise use sample index
+                    try:
+                        t = channel.time_track()
+                    except Exception:
+                        t = np.arange(len(data))
 
                 label = f"{item.file_label} – {item.group}/{item.channel}"
                 self._ax.plot(t, data, color=item.color, linewidth=1.2,
@@ -504,7 +650,10 @@ class TdmsViewer(tk.Tk):
             )
             legend.get_frame().set_alpha(0.9)
 
-        self._ax.set_xlabel("Time / Sample Index", color=TEXT_FG)
+        if use_xy:
+            self._ax.set_xlabel(f"{x_group} / {x_channel}", color=TEXT_FG)
+        else:
+            self._ax.set_xlabel("Time / Sample Index", color=TEXT_FG)
         self._ax.set_ylabel("Value", color=TEXT_FG)
         self._ax.set_title("TDMS Channel Overlay", color=TEXT_FG)
 
